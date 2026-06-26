@@ -227,9 +227,9 @@ def serialize_material(material):
         "shaders": [],
     }
 
-    # Material terminals such as outputs:arnold:surface or outputs:surface
-    connected_shader_paths = set()
-
+    # Material terminals such as outputs:arnold:surface or outputs:surface.
+    # If Arnold-specific terminals exist, prefer them and ignore generic preview terminals.
+    terminal_candidates = []
     for output_port in material.GetOutputs():
         connection_data = extract_connection_data(output_port)
         if not connection_data:
@@ -242,12 +242,20 @@ def serialize_material(material):
         if terminal_name not in SUPPORTED_TERMINAL_NAMES:
             continue
 
-        material_data["terminals"][terminal_name] = {
+        terminal_candidates.append((terminal_name, {
             "type": str(output_port.GetTypeName()),
             "connection": connection_data,
-        }
+        }))
 
-        connected_shader_paths.add(connection_data["source_path"])
+    has_arnold_terminal = any(name.startswith("arnold:") for name, _ in terminal_candidates)
+
+    connected_shader_paths = set()
+    for terminal_name, terminal_payload in terminal_candidates:
+        if has_arnold_terminal and not terminal_name.startswith("arnold:"):
+            continue
+
+        material_data["terminals"][terminal_name] = terminal_payload
+        connected_shader_paths.add(terminal_payload["connection"]["source_path"])
 
     # Follow only the shader subgraph that is actually connected to exported terminals.
     visited_shader_paths = set()
