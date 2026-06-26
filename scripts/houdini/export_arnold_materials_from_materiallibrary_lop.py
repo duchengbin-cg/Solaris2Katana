@@ -16,6 +16,25 @@ time_code = Usd.TimeCode.Default()
 
 output_path = hou.expandString("$HIP/houdini_arnold_materials_export.json")
 
+SUPPORTED_TERMINAL_NAMES = {
+    "surface",
+    "displacement",
+    "volume",
+    "arnold:surface",
+    "arnold:displacement",
+    "arnold:volume",
+}
+
+
+def safe_number(value):
+    try:
+        number = float(value)
+        if math.isfinite(number):
+            return number
+        return None
+    except Exception:
+        return None
+
 
 def to_python_type(value):
     """Convert USD/Gf/Sdf values into JSON-safe Python values."""
@@ -208,7 +227,9 @@ def serialize_material(material):
         "shaders": [],
     }
 
-    # Material terminals such as outputs:arnold:surface
+    # Material terminals such as outputs:arnold:surface or outputs:surface
+    connected_shader_paths = set()
+
     for output_port in material.GetOutputs():
         connection_data = extract_connection_data(output_port)
         if not connection_data:
@@ -218,17 +239,41 @@ def serialize_material(material):
         if terminal_name.startswith("outputs:"):
             terminal_name = terminal_name[len("outputs:"):]
 
+        if terminal_name not in SUPPORTED_TERMINAL_NAMES:
+            continue
+
         material_data["terminals"][terminal_name] = {
             "type": str(output_port.GetTypeName()),
             "connection": connection_data,
         }
 
-    # Collect all shader prims authored below this material
-    for child in Usd.PrimRange(prim):
-        if child == prim:
+        connected_shader_paths.add(connection_data["source_path"])
+
+    # Follow only the shader subgraph that is actually connected to exported terminals.
+    visited_shader_paths = set()
+    shader_queue = list(connected_shader_paths)
+
+    while shader_queue:
+        shader_path = shader_queue.pop(0)
+        if shader_path in visited_shader_paths:
             continue
-        if child.IsA(UsdShade.Shader):
-            material_data["shaders"].append(serialize_shader(UsdShade.Shader(child)))
+
+        visited_shader_paths.add(shader_path)
+
+        shader_prim = stage.GetPrimAtPath(shader_path)
+        if not shader_prim or not shader_prim.IsA(UsdShade.Shader):
+            continue
+
+        shader = UsdShade.Shader(shader_prim)
+        material_data["shaders"].append(serialize_shader(shader))
+
+        for input_port in shader.GetInputs():
+            upstream_data = extract_connection_data(input_port)
+            if not upstream_data:
+                continue
+            upstream_path = upstream_data.get("source_path")
+            if upstream_path and upstream_path not in visited_shader_paths:
+                shader_queue.append(upstream_path)
 
     return material_data
 
