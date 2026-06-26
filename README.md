@@ -18,3 +18,21 @@ Planned scope:
 - Convert Houdini `Material Library LOP` shader networks to Katana `NetworkMaterialCreate`
 - Convert Houdini material assignments to Katana `UsdMaterialAssign`
 - Extend support for additional renderers and renderer-specific mappings
+
+## Repository Structure
+
+```text
+scripts/
+  houdini/
+    export_lights_from_python_lop.py
+  katana/
+    import_houdini_lights_to_gafferthree.py
+```
+
+## Current Status
+
+The first version focuses on Arnold light migration from Solaris LOP to Katana KtoA. The repository name is intentionally broader so it can be extended later to other renderers and more Solaris data types.
+
+## License
+
+MIT
