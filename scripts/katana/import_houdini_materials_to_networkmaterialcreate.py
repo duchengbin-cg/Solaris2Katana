@@ -36,6 +36,32 @@ def load_json_with_better_error(json_path):
         )
 
 
+def sanitize_data(value):
+    """
+    Recursively sanitize incoming JSON data so odd string payloads do not crash
+    Katana while creating nodes or setting parameters.
+    """
+    if isinstance(value, dict):
+        result = {}
+        for key, item in value.items():
+            result[sanitize_data(key)] = sanitize_data(item)
+        return result
+
+    if isinstance(value, list):
+        return [sanitize_data(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [sanitize_data(item) for item in value]
+
+    if isinstance(value, bytes):
+        return safe_text_value(value)
+
+    if isinstance(value, str):
+        return safe_text_value(value)
+
+    return value
+
+
 def get_children(node):
     for method_name in ("getChildren", "getChildNodes"):
         method = getattr(node, method_name, None)
@@ -297,11 +323,14 @@ def set_shader_parameters(shader_node, shader_data):
         if "value" not in input_data:
             continue
 
-        value = input_data.get("value")
-        base_path = "parameters.{}".format(input_name)
-        ok = set_parameter_value_group(shader_node, base_path, value)
-        if ok is False:
-            print("[警告] 参数写入失败: {}.{}".format(shader_data.get("name"), input_name))
+        try:
+            value = input_data.get("value")
+            base_path = "parameters.{}".format(input_name)
+            ok = set_parameter_value_group(shader_node, base_path, value)
+            if ok is False:
+                print("[警告] 参数写入失败: {}.{}".format(shader_data.get("name"), input_name))
+        except Exception as exc:
+            print("[警告] 参数异常: {}.{} : {}".format(shader_data.get("name"), input_name, exc))
 
 
 def connect_shader_network(node_by_path, material_data):
@@ -409,39 +438,49 @@ def create_master_network_material_create(parent_node):
 
 
 def create_material_network(material_data, nmc_node, network_material_node, x_origin=0, y_origin=0):
+    material_data = sanitize_data(material_data)
     configure_network_material(network_material_node, material_data)
 
     node_by_path = {}
 
     # 1. Create all Arnold shader nodes
     for index, shader_data in enumerate(material_data.get("shaders", [])):
-        shader_node = NodegraphAPI.CreateNode("ArnoldShadingNode", nmc_node)
-        shader_name = shader_data.get("name") or "arnoldShader"
-        shader_node.setName(unique_node_name(nmc_node, safe_identifier(shader_name)))
-        set_node_position_safe(
-            shader_node,
-            x_origin + index * NODE_X_OFFSET,
-            y_origin + (index % 6) * NODE_Y_OFFSET
-        )
-
-        configure_arnold_shading_node(shader_node, shader_data)
         try:
+            shader_node = NodegraphAPI.CreateNode("ArnoldShadingNode", nmc_node)
+            shader_name = shader_data.get("name") or "arnoldShader"
+            shader_node.setName(unique_node_name(nmc_node, safe_identifier(shader_name)))
+            set_node_position_safe(
+                shader_node,
+                x_origin + index * NODE_X_OFFSET,
+                y_origin + (index % 6) * NODE_Y_OFFSET
+            )
+
+            configure_arnold_shading_node(shader_node, shader_data)
             set_shader_parameters(shader_node, shader_data)
+            node_by_path[shader_data.get("path")] = shader_node
         except Exception as exc:
-            print("[警告] shader 参数恢复中断: {} : {}".format(shader_name, exc))
-        node_by_path[shader_data.get("path")] = shader_node
+            print("[警告] shader 创建/恢复失败: {} : {}".format(
+                shader_data.get("name") or "arnoldShader",
+                exc
+            ))
 
     # 2. Connect shader-to-shader links
-    connect_shader_network(node_by_path, material_data)
+    try:
+        connect_shader_network(node_by_path, material_data)
+    except Exception as exc:
+        print("[警告] shader 网络连接阶段异常: {}".format(exc))
 
     # 3. Connect material terminals
-    connect_material_terminals(network_material_node, node_by_path, material_data)
+    try:
+        connect_material_terminals(network_material_node, node_by_path, material_data)
+    except Exception as exc:
+        print("[警告] material terminal 连接阶段异常: {}".format(exc))
 
     return nmc_node
 
 
 def import_arnold_materials():
-    payload = load_json_with_better_error(JSON_PATH)
+    payload = sanitize_data(load_json_with_better_error(JSON_PATH))
 
     if payload.get("kind") != "arnold_materials":
         raise RuntimeError("JSON kind 不是 arnold_materials")
