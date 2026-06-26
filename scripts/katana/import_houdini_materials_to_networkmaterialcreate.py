@@ -5,12 +5,16 @@ JSON_PATH = r"D:/houdini_arnold_materials_export.json"
 NAMESPACE = ""
 NODE_X_OFFSET = 260
 NODE_Y_OFFSET = -120
+NETWORK_MATERIAL_CREATE_NAME = "Houdini_Imported_Materials"
 
 # USD material terminal -> Katana NetworkMaterial terminal
 TERMINAL_NAME_MAP = {
     "arnold:surface": "arnoldSurface",
     "arnold:displacement": "arnoldDisplacement",
     "arnold:volume": "arnoldVolume",
+    "surface": "arnoldSurface",
+    "displacement": "arnoldDisplacement",
+    "volume": "arnoldVolume",
 }
 
 
@@ -80,6 +84,43 @@ def unique_node_name(parent_node, base_name):
         index += 1
 
 
+def safe_identifier(value):
+    text = value if isinstance(value, str) else str(value)
+    result = []
+    for ch in text:
+        if ch.isalnum() or ch in ("_", "-"):
+            result.append(ch)
+        else:
+            result.append("_")
+    cleaned = "".join(result).strip("_")
+    return cleaned or "node"
+
+
+def safe_text_value(value):
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "gbk", "latin-1"):
+            try:
+                return value.decode(encoding)
+            except Exception:
+                pass
+        return value.decode("utf-8", "ignore")
+
+    text = value if isinstance(value, str) else str(value)
+
+    try:
+        text.encode("utf-8")
+        return text
+    except Exception:
+        pass
+
+    try:
+        return text.encode("latin-1", "ignore").decode("latin-1")
+    except Exception:
+        pass
+
+    return "".join(ch for ch in text if ord(ch) < 128)
+
+
 def set_param_value(param, value):
     if param is None:
         return False
@@ -96,8 +137,14 @@ def set_param_value(param, value):
         param.setValue(value, 0)
         return True
 
-    param.setValue(str(value), 0)
-    return True
+    text_value = safe_text_value(value)
+    try:
+        param.setValue(text_value, 0)
+        return True
+    except Exception:
+        ascii_value = "".join(ch for ch in text_value if ord(ch) < 128)
+        param.setValue(ascii_value, 0)
+        return True
 
 
 def set_parameter_value_group(node, base_path, value):
@@ -230,11 +277,15 @@ def configure_arnold_shading_node(shader_node, shader_data):
     if ":" in arnold_node_type:
         arnold_node_type = arnold_node_type.split(":")[-1]
 
-    node_type_param.setValue(arnold_node_type, 0)
+    node_type_param.setValue(safe_text_value(arnold_node_type), 0)
 
     check_dynamic = getattr(shader_node, "checkDynamicParameters", None)
     if check_dynamic is not None:
         check_dynamic()
+
+    shader_name_param = shader_node.getParameter("name")
+    if shader_name_param is not None:
+        shader_name_param.setValue(safe_identifier(shader_data.get("name") or "shader"), 0)
 
 
 def set_shader_parameters(shader_node, shader_data):
@@ -333,35 +384,32 @@ def connect_material_terminals(network_material_node, node_by_path, material_dat
                 ))
 
 
-def configure_network_material_create(nmc_node, network_material_node, material_data):
+def configure_network_material(network_material_node, material_data):
     material_name = material_data.get("name", "ImportedMaterial")
 
-    try:
-        nmc_node.setName(unique_node_name(NodegraphAPI.GetRootNode(), material_name + "_NMC"))
-    except Exception:
-        pass
-
-    for node in (nmc_node, network_material_node):
-        if node is None:
-            continue
-        name_param = node.getParameter("name")
-        if name_param is not None:
-            name_param.setValue(material_name, 0)
-        namespace_param = node.getParameter("namespace")
-        if namespace_param is not None:
-            namespace_param.setValue(NAMESPACE, 0)
-
-
-def create_material_network(material_data, parent_node, x_origin=0, y_origin=0):
-    nmc_node = NodegraphAPI.CreateNode("NetworkMaterialCreate", parent_node)
-    set_node_position_safe(nmc_node, x_origin, y_origin)
-
-    network_material_node = find_first_child_by_type(nmc_node, "NetworkMaterial")
     if network_material_node is None:
-        network_material_node = NodegraphAPI.CreateNode("NetworkMaterial", nmc_node)
-        set_node_position_safe(network_material_node, x_origin + NODE_X_OFFSET * 2, y_origin)
+        return
 
-    configure_network_material_create(nmc_node, network_material_node, material_data)
+    name_param = network_material_node.getParameter("name")
+    if name_param is not None:
+        name_param.setValue(safe_text_value(material_name), 0)
+
+    namespace_param = network_material_node.getParameter("namespace")
+    if namespace_param is not None:
+        namespace_param.setValue(NAMESPACE, 0)
+
+
+def create_master_network_material_create(parent_node):
+    nmc_node = NodegraphAPI.CreateNode("NetworkMaterialCreate", parent_node)
+    nmc_node.setName(unique_node_name(parent_node, NETWORK_MATERIAL_CREATE_NAME))
+    set_node_position_safe(nmc_node, 0, 0)
+
+    first_network_material = find_first_child_by_type(nmc_node, "NetworkMaterial")
+    return nmc_node, first_network_material
+
+
+def create_material_network(material_data, nmc_node, network_material_node, x_origin=0, y_origin=0):
+    configure_network_material(network_material_node, material_data)
 
     node_by_path = {}
 
@@ -369,7 +417,7 @@ def create_material_network(material_data, parent_node, x_origin=0, y_origin=0):
     for index, shader_data in enumerate(material_data.get("shaders", [])):
         shader_node = NodegraphAPI.CreateNode("ArnoldShadingNode", nmc_node)
         shader_name = shader_data.get("name") or "arnoldShader"
-        shader_node.setName(unique_node_name(nmc_node, shader_name))
+        shader_node.setName(unique_node_name(nmc_node, safe_identifier(shader_name)))
         set_node_position_safe(
             shader_node,
             x_origin + index * NODE_X_OFFSET,
@@ -377,7 +425,10 @@ def create_material_network(material_data, parent_node, x_origin=0, y_origin=0):
         )
 
         configure_arnold_shading_node(shader_node, shader_data)
-        set_shader_parameters(shader_node, shader_data)
+        try:
+            set_shader_parameters(shader_node, shader_data)
+        except Exception as exc:
+            print("[警告] shader 参数恢复中断: {} : {}".format(shader_name, exc))
         node_by_path[shader_data.get("path")] = shader_node
 
     # 2. Connect shader-to-shader links
@@ -397,6 +448,7 @@ def import_arnold_materials():
 
     materials = payload.get("materials", [])
     root_node = NodegraphAPI.GetRootNode()
+    nmc_node, first_network_material = create_master_network_material_create(root_node)
 
     created_nodes = []
 
@@ -404,21 +456,31 @@ def import_arnold_materials():
 
     for index, material_data in enumerate(materials):
         try:
-            nmc_node = create_material_network(
+            if index == 0 and first_network_material is not None:
+                network_material_node = first_network_material
+                set_node_position_safe(network_material_node, index * 900 + NODE_X_OFFSET * 2, 0)
+            else:
+                network_material_node = NodegraphAPI.CreateNode("NetworkMaterial", nmc_node)
+                network_material_node.setName(unique_node_name(nmc_node, safe_identifier(material_data.get("name") or "NetworkMaterial")))
+                set_node_position_safe(network_material_node, index * 900 + NODE_X_OFFSET * 2, 0)
+
+            create_material_network(
                 material_data,
-                root_node,
-                x_origin=index * 500,
+                nmc_node,
+                network_material_node,
+                x_origin=index * 900,
                 y_origin=0
             )
-            created_nodes.append(nmc_node)
-            print("[成功] {} -> {}".format(material_data.get("name"), nmc_node.getName()))
+            created_nodes.append(network_material_node)
+            print("[成功] {} -> {}".format(material_data.get("name"), network_material_node.getName()))
         except Exception as exc:
             print("[失败] {} : {}".format(material_data.get("name"), exc))
 
     print("----- 导入结束 -----")
     print("成功创建 {} 个材质".format(len(created_nodes)))
-    return created_nodes
+    return nmc_node, created_nodes
 
 
-created_material_nodes = import_arnold_materials()
-print("完成。创建的 NetworkMaterialCreate 数量: {}".format(len(created_material_nodes)))
+nmc_node, created_material_nodes = import_arnold_materials()
+print("完成。创建的 NetworkMaterialCreate: {}".format(nmc_node.getName()))
+print("完成。创建的 NetworkMaterial 数量: {}".format(len(created_material_nodes)))
