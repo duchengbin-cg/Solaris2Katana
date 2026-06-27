@@ -26,6 +26,48 @@ SUPPORTED_TERMINAL_NAMES = {
 }
 
 
+def safe_text_value(value):
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "gbk", "latin-1"):
+            try:
+                return value.decode(encoding)
+            except Exception:
+                pass
+        return value.decode("utf-8", "ignore")
+
+    try:
+        text = value if isinstance(value, str) else str(value)
+    except Exception:
+        try:
+            text = repr(value)
+        except Exception:
+            text = "<unprintable>"
+
+    try:
+        text.encode("utf-8")
+        return text
+    except Exception:
+        pass
+
+    try:
+        return text.encode("latin-1", "ignore").decode("latin-1")
+    except Exception:
+        pass
+
+    return "".join(ch for ch in text if ord(ch) < 128)
+
+
+def normalize_port_name(port_name):
+    text = safe_text_value(port_name).strip()
+    if not text:
+        return ""
+    if "." in text:
+        text = text.split(".")[-1]
+    if ":" in text:
+        text = text.split(":")[-1]
+    return text
+
+
 def safe_number(value):
     try:
         number = float(value)
@@ -50,8 +92,11 @@ def to_python_type(value):
     if isinstance(value, float):
         return value if math.isfinite(value) else None
 
+    if isinstance(value, bytes):
+        return safe_text_value(value)
+
     if isinstance(value, str):
-        return value
+        return safe_text_value(value)
 
     type_str = str(type(value))
     class_name = getattr(type(value), "__name__", "")
@@ -77,7 +122,7 @@ def to_python_type(value):
     if isinstance(value, dict):
         result = {}
         for key, item in value.items():
-            result[str(key)] = to_python_type(item)
+            result[safe_text_value(key)] = to_python_type(item)
         return result
 
     if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
@@ -86,7 +131,7 @@ def to_python_type(value):
         except Exception:
             pass
 
-    return str(value)
+    return safe_text_value(value)
 
 
 def get_shader_identifier(shader):
@@ -94,7 +139,7 @@ def get_shader_identifier(shader):
     if shader_id_attr:
         shader_id = shader_id_attr.Get(time_code)
         if shader_id:
-            return str(shader_id)
+            return safe_text_value(shader_id)
     return ""
 
 
@@ -141,7 +186,8 @@ def extract_connection_data(port):
             source_api, source_name, source_type = connected_sources[0]
             return {
                 "source_path": str(source_api.GetPrim().GetPath()),
-                "source_name": str(source_name),
+                "source_name": safe_text_value(source_name),
+                "source_name_base": normalize_port_name(source_name),
                 "source_type": str(source_type),
             }
     except Exception:
@@ -153,7 +199,8 @@ def extract_connection_data(port):
         if source_api:
             return {
                 "source_path": str(source_api.GetPrim().GetPath()),
-                "source_name": str(source_name),
+                "source_name": safe_text_value(source_name),
+                "source_name_base": normalize_port_name(source_name),
                 "source_type": str(source_type),
             }
     except Exception:
@@ -187,7 +234,7 @@ def serialize_shader(shader):
     prim = shader.GetPrim()
 
     shader_data = {
-        "name": prim.GetName(),
+        "name": safe_text_value(prim.GetName()),
         "path": str(prim.GetPath()),
         "info_id": get_shader_identifier(shader),
         "implementation_source": "",
@@ -200,17 +247,18 @@ def serialize_shader(shader):
         if impl_source_attr and impl_source_attr.IsValid():
             impl_source = impl_source_attr.Get(time_code)
             if impl_source:
-                shader_data["implementation_source"] = str(impl_source)
+                shader_data["implementation_source"] = safe_text_value(impl_source)
     except Exception:
         pass
 
     for input_port in shader.GetInputs():
-        shader_data["inputs"][input_port.GetBaseName()] = serialize_input(input_port)
+        shader_data["inputs"][safe_text_value(input_port.GetBaseName())] = serialize_input(input_port)
 
     for output_port in shader.GetOutputs():
         shader_data["outputs"].append({
-            "name": output_port.GetBaseName(),
-            "full_name": output_port.GetAttr().GetName(),
+            "name": safe_text_value(output_port.GetBaseName()),
+            "name_base": normalize_port_name(output_port.GetBaseName()),
+            "full_name": safe_text_value(output_port.GetAttr().GetName()),
             "type": str(output_port.GetTypeName()),
         })
 
@@ -221,7 +269,7 @@ def serialize_material(material):
     prim = material.GetPrim()
 
     material_data = {
-        "name": prim.GetName(),
+        "name": safe_text_value(prim.GetName()),
         "path": str(prim.GetPath()),
         "terminals": {},
         "shaders": [],
@@ -235,7 +283,7 @@ def serialize_material(material):
         if not connection_data:
             continue
 
-        terminal_name = output_port.GetAttr().GetName()
+        terminal_name = safe_text_value(output_port.GetAttr().GetName())
         if terminal_name.startswith("outputs:"):
             terminal_name = terminal_name[len("outputs:"):]
 
