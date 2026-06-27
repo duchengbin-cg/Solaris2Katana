@@ -1,75 +1,154 @@
 # Solaris2Katana
 
-Utilities for migrating Solaris/USD lighting and lookdev data into Katana.
+Utilities for moving Houdini Solaris/USD lighting and lookdev data into Katana.
 
 ## Overview
 
-`Solaris2Katana` is a pipeline utility repository focused on moving data authored in Houdini Solaris LOP into Katana in a practical, production-oriented way.
+`Solaris2Katana` is a production-oriented utility repository for transferring data authored in Houdini Solaris LOP into Katana with as little manual rebuilding as possible.
 
-The first implemented stage is Arnold light migration:
+The repository currently focuses on three practical workflows:
 
-- Export Arnold/USD light data from Houdini `Python Script LOP`
-- Rebuild lights inside Katana `GafferThree`
-- Create Arnold/KtoA light packages when available
-- Restore transforms, standard light parameters, Arnold custom parameters, and skydome HDR textures
+- `Material Library LOP -> JSON -> Katana NetworkMaterialCreate`
+- `UsdLux / Arnold lights -> JSON -> Katana GafferThree`
+- `Assign Material LOP -> JSON -> Katana UsdMaterialAssign`
 
-The repository name is intentionally broader than Arnold so it can later grow into:
-
-- Solaris material conversion
-- Solaris material assignment conversion
-- Support for other renderers and renderer-specific package mappings
+The current implementation targets Arnold/HtoA on the Houdini side and KtoA on the Katana side, while keeping the repository broad enough to later support more renderer-specific mappings.
 
 ## Current Scope
 
 Implemented:
 
-- Houdini Solaris light export to JSON
-- Katana light import into `GafferThree`
-- Arnold package creation for:
-  - quad
-  - disk
-  - distant
-  - point
-  - skydome
+- Arnold material network export from Solaris `Material Library LOP`
+- Arnold material import into a single Katana `NetworkMaterialCreate`
+- Arnold/USD light export from Solaris
+- Arnold/KtoA light import into Katana `GafferThree`
+- Shared light filter reconstruction and referencing in Katana
+- USD material binding export from authored layer opinions
+- Katana `UsdMaterialAssign` generation grouped by material path
 
-Planned:
+Partially implemented / still evolving:
 
-- `Material Library LOP -> Katana NetworkMaterialCreate`
-- `Assign Material -> Katana UsdMaterialAssign`
-- Textured area light extensions
-- Better geometric calibration for quad light size matching
+- complex light filter auxiliary networks beyond the currently tested Arnold cases
+- native USD assignment edge cases such as collection bindings
+- renderer coverage beyond Arnold/KtoA
 
 ## Repository Structure
 
 ```text
 scripts/
   houdini/
+    export_arnold_materials_from_materiallibrary_lop.py
     export_lights_from_python_lop.py
+    export_material_assignments_from_lop.py
   katana/
+    import_houdini_materials_to_networkmaterialcreate.py
     import_houdini_lights_to_gafferthree.py
+    import_houdini_material_assignments_to_usdmaterialassign.py
 ```
 
-## How It Works
+## Script Guide
 
-The current workflow is intentionally simple:
+### Houdini
 
-1. A Houdini `Python Script LOP` walks the editable USD stage
-2. It finds light prims using `UsdLux.LightAPI`
-3. It extracts:
-   - light type
-   - name and path
-   - world transform
-   - standard USD light attributes
-   - Arnold-specific custom parameters
-4. It writes everything into a JSON file
-5. Katana reads that JSON file
-6. Katana creates a new `GafferThree`
-7. For each exported light, Katana creates the closest Arnold/KtoA package
-8. Katana restores transform and shader parameters onto the new light package
+#### `scripts/houdini/export_arnold_materials_from_materiallibrary_lop.py`
 
-## Supported Light Mapping
+Use inside a Houdini `Python Script LOP`.
 
-Current default light type mapping:
+Purpose:
+
+- scans Arnold material networks authored in Solaris
+- exports shader nodes, inputs, connections, and terminals to JSON
+- preserves compound values such as `color3f` / `vector3f` as numeric arrays
+
+Default output:
+
+- `$HIP/houdini_arnold_materials_export.json`
+
+Best used when:
+
+- materials are authored through `Material Library LOP`
+- Arnold shader networks need to be rebuilt in Katana `NetworkMaterialCreate`
+
+#### `scripts/houdini/export_lights_from_python_lop.py`
+
+Use inside a Houdini `Python Script LOP`.
+
+Purpose:
+
+- scans the editable USD stage for light prims
+- exports transforms, standard light attributes, Arnold custom parameters, and texture paths
+- exports color temperature state
+- exports light filter paths and, when available, light filter shader networks
+
+Default output:
+
+- `$HIP/houdini_lights_export.json`
+
+Best used when:
+
+- Solaris lights need to be rebuilt in Katana `GafferThree`
+- Arnold light filters authored in Solaris must be reconstructed as reusable Katana light filters
+
+#### `scripts/houdini/export_material_assignments_from_lop.py`
+
+Use inside a Houdini `Python Script LOP`.
+
+Purpose:
+
+- exports authored USD `material:binding*` opinions from the layer stack
+- avoids flattening the fully composed stage
+- keeps class/material binding structure compact for later Katana editing
+
+Default output:
+
+- `$HIP/houdini_material_assignments_export.json`
+
+Important behavior:
+
+- reads authored layer specs instead of traversing the composed stage
+- this is intentional so layout, instancing, and duplication do not explode into per-instance assignments
+
+### Katana
+
+#### `scripts/katana/import_houdini_materials_to_networkmaterialcreate.py`
+
+Run inside Katana Python.
+
+Purpose:
+
+- reads the material JSON exported from Houdini
+- creates one `NetworkMaterialCreate`
+- creates one internal `NetworkMaterial` per Solaris material
+- rebuilds Arnold shading nodes and internal connections
+- restores Arnold terminals such as:
+  - `arnoldSurface`
+  - `arnoldDisplacement`
+  - `arnoldVolume`
+
+Notable compatibility work already included:
+
+- enum/index remapping for KtoA popups
+- `ramp_float` dynamic structure handling
+- `curvature.output` mapping
+- numeric array restoration for color/vector parameters
+
+Default node name:
+
+- `Houdini_Imported_Materials`
+
+#### `scripts/katana/import_houdini_lights_to_gafferthree.py`
+
+Run inside Katana Python.
+
+Purpose:
+
+- reads the light JSON exported from Houdini
+- creates a new `GafferThree`
+- creates renderer-specific Arnold light packages when available
+- restores transforms and light parameters
+- rebuilds shared light filters and references them back to lights
+
+Current light mapping:
 
 - `RectLight -> quad_light`
 - `DiskLight -> disk_light`
@@ -77,185 +156,135 @@ Current default light type mapping:
 - `SphereLight -> point_light`
 - `DomeLight -> skydome_light`
 
-## Houdini Export Script
+Notable compatibility work already included:
 
-File:
+- Kelvin-to-RGB fallback when KtoA does not expose a native color temperature toggle
+- skydome texture restoration through the extra Arnold surface shader path
+- shared light filter reconstruction under `_sharedLightFilters`
+- light filter sharing back onto lights using GafferThree light filter reference mechanics
 
-- `scripts/houdini/export_lights_from_python_lop.py`
+Default node name:
 
-### Where To Use It
+- `Houdini_Imported_Lights`
 
-Use this script inside a Houdini `Python Script LOP`.
+#### `scripts/katana/import_houdini_material_assignments_to_usdmaterialassign.py`
 
-It is not written for the Houdini Python Shell.
+Run inside Katana Python.
 
-### What It Reads
+Purpose:
 
-The script reads the current editable stage from:
+- reads authored USD material binding JSON from Houdini
+- groups assignments by material path
+- creates Katana `UsdMaterialAssign` nodes
+- writes grouped `primPaths` and `materialAssign`
+- organizes all created assignment nodes into a `GroupStack`
 
-- `hou.pwd()`
-- `node.editableStage()`
+Important behavior:
 
-### What It Exports
+- one material can drive many `primPaths`
+- this is designed to preserve class-based look assignment workflows instead of expanding to a per-instance shot result
 
-Each light record currently contains:
+Default GroupStack name:
 
-- `name`
-- `path`
-- `usd_type`
-- `usd_type_raw`
-- `translate`
-- `rotate`
-- `scale`
-- `world_matrix`
-- standard USD light parameters such as:
-  - `intensity`
-  - `exposure`
-  - `color`
-  - `width`
-  - `height`
-  - `radius`
-  - `length`
-  - `texture_file`
-  - `texture_format`
-- `arnold_params`
-- optional IDs used for Katana-side shader/light-type inference:
-  - `shader_id`
-  - `light_shader_id`
+- `Houdini_UsdMaterialAssigns`
 
-### Output File
+## End-to-End Workflows
 
-By default the export path is:
+### 1. Arnold Materials
 
-- `$HIP/houdini_lights_export.json`
-
-The script writes JSON via a temporary file and then atomically replaces the target file, which helps avoid half-written broken JSON files.
-
-## Katana Import Script
-
-File:
-
-- `scripts/katana/import_houdini_lights_to_gafferthree.py`
-
-### Where To Use It
-
-Run the script inside Katana Python.
-
-Before running, set:
-
-- `JSON_PATH`
-
-to the JSON exported from Houdini.
-
-### What It Creates
-
-The script creates:
-
-- a new `GafferThree` node
-- one Arnold/KtoA light package per exported light
-
-It tries renderer-specific Arnold package classes first and only falls back to `LightPackage` if necessary.
-
-### Arnold Package Handling
-
-The importer currently tries package classes such as:
-
-- `ArnoldQuadLightPackage`
-- `ArnoldDiskLightPackage`
-- `ArnoldDistantLightPackage`
-- `ArnoldPointLightPackage`
-- `ArnoldHDRISkydomeLightPackage`
-
-### Transform Restoration
-
-The importer restores:
-
-- `translate`
-- `rotate`
-- `scale`
-
-Quad lights need special handling in Katana:
-
-- `ArnoldQuadLightPackage` can ship with scale expressions enabled
-- the importer disables those expressions before writing explicit size values
-
-Current quad size rule:
-
-- `scale.x -> width`
-- `scale.y -> height`
-- `scale.z -> 1.0`
-
-Two tuning variables are intentionally exposed for later pipeline calibration:
-
-- `QUAD_WIDTH_MULTIPLIER`
-- `QUAD_HEIGHT_MULTIPLIER`
-
-Both are currently set to `1.0`.
-
-### Shader Restoration
-
-The importer restores:
-
-- standard Arnold light parameters where Katana/KtoA exposes a clean equivalent
-- Arnold custom parameters exported from Solaris
-- HDR texture file on skydome lights through the extra Arnold surface shader path
-
-Skydome behavior:
-
-- creates `skydome_light`
-- creates/configures the extra surface shader
-- restores HDR path through:
-  - `shaders.arnoldSurfaceParams.filename`
-
-## Current Parameter Rules
-
-These parameters are currently ignored intentionally:
-
-- `angle`
-- `soft_edge`
-- `texture_format`
-
-For `SphereLight`:
-
-- current target in Katana is `point_light`
-- `spread` is intentionally ignored
-
-For `RectLight`:
-
-- `width` and `height` are not written as direct light shader params
-- they are baked into the quad package transform scale instead
-
-## Basic Usage
-
-### Houdini Side
+Houdini:
 
 1. Create or select a `Python Script LOP`
-2. Paste in `scripts/houdini/export_lights_from_python_lop.py`
+2. Paste `scripts/houdini/export_arnold_materials_from_materiallibrary_lop.py`
 3. Cook the node
-4. Confirm the JSON file is written successfully
+4. Confirm `houdini_arnold_materials_export.json` is written
 
-### Katana Side
+Katana:
 
-1. Open Katana
-2. Open the Python tab or Script Manager
-3. Set `JSON_PATH` in `scripts/katana/import_houdini_lights_to_gafferthree.py`
-4. Run the script
-5. Check the new `GafferThree` node created in the node graph
+1. Open `scripts/katana/import_houdini_materials_to_networkmaterialcreate.py`
+2. Set `JSON_PATH`
+3. Run the script in Katana Python
+4. Confirm a new `NetworkMaterialCreate` was created
+
+### 2. Arnold Lights And Filters
+
+Houdini:
+
+1. Create or select a `Python Script LOP`
+2. Paste `scripts/houdini/export_lights_from_python_lop.py`
+3. Cook the node
+4. Confirm `houdini_lights_export.json` is written
+
+Katana:
+
+1. Open `scripts/katana/import_houdini_lights_to_gafferthree.py`
+2. Set `JSON_PATH`
+3. Run the script in Katana Python
+4. Confirm a new `GafferThree` was created
+5. Check `_sharedLightFilters` for imported reusable light filters
+
+### 3. USD Material Assignments
+
+Houdini:
+
+1. Place a `Python Script LOP` after the relevant `Assign Material LOP` authoring
+2. Paste `scripts/houdini/export_material_assignments_from_lop.py`
+3. Cook the node
+4. Confirm `houdini_material_assignments_export.json` is written
+
+Katana:
+
+1. Open `scripts/katana/import_houdini_material_assignments_to_usdmaterialassign.py`
+2. Set `JSON_PATH`
+3. Optionally select one upstream USD node before running
+4. Run the script in Katana Python
+5. Confirm a `GroupStack` of `UsdMaterialAssign` nodes was created
+
+## Important Notes
+
+### Why The Assignment Export Uses Authored Layer Specs
+
+The material assignment export intentionally does **not** traverse the fully composed USD scene and collect final per-object bindings.
+
+Instead, it exports authored `material:binding*` opinions from the layer stack so that:
+
+- class-based assignments stay compact
+- layout and instancing do not blow up into a large flattened result
+- the imported Katana assignment graph remains editable at the same abstraction level as the original Solaris authoring
+
+### Why Light Filters Are Shared
+
+The light importer rebuilds light filters as reusable shared filters instead of baking filter parameters directly under each light package. This matches production reuse better and keeps the Katana setup closer to how the Solaris filter networks are authored.
 
 ## Known Limitations
 
 - Houdini and Katana do not always expose identical size semantics for Arnold area lights
-- Quad light physical size may still require multiplier calibration depending on your show scale and package defaults
-- Textured area lights are not yet handled as fully as skydome lights
-- Material networks and material assignments are not yet part of the public scripts
+- quad light width/height may still require show-specific multiplier calibration
+- textured area lights are not yet covered as fully as skydome lights
+- some complex Arnold light filter auxiliary networks may still need more renderer-specific handling
+- `UsdMaterialAssign` import currently targets direct binding workflows; collection bindings are skipped
+- the material assignment transfer assumes Solaris and Katana use matching USD prim and material paths
+- material importer compatibility currently focuses on Arnold/HtoA to KtoA rather than generic USD shading translation
+
+## Current Validation Status
+
+Tested in the repository workflow so far:
+
+- material colors and vector values restore correctly in Katana
+- most KtoA enum popup issues have been remapped for current tested nodes
+- `ramp_float` compatibility has been improved for the tested Arnold cases
+- `curvature.output` mapping has been corrected for the tested Arnold setup
+- light color temperature fallback works for tested light setups where KtoA lacks a direct temperature control
+- shared light filter reconstruction and reuse work for the tested Solaris/Katana Arnold setup
+- authored class-based material assignment export avoids per-instance scene flattening
 
 ## Roadmap
 
-- Add rectangle light proxy geometry / corner export for better size matching
-- Add `Material Library LOP -> NetworkMaterialCreate`
-- Add `Assign Material -> UsdMaterialAssign`
-- Add more renderer-specific package mappings
-- Expand beyond Arnold/KtoA
+- improve support for more Arnold light filter graph variants
+- expand native USD assignment support beyond direct bindings
+- add more renderer-specific package mappings
+- reduce remaining manual calibration for some area light sizing cases
+- expand beyond Arnold/KtoA where practical
 
 ## License
 
