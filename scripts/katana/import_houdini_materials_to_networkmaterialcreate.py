@@ -37,12 +37,27 @@ RAMP_INTERPOLATION_NAME_MAP = {
     "monotone-cubic": 3,
 }
 
+RAMP_INTERPOLATION_VALUE_MAP = {
+    0: "constant",
+    1: "linear",
+    2: "catmull-rom",
+    3: "monotone_cubic",
+}
+
 KNOWN_ENUM_VALUE_MAP = {
     ("triplanar", "coord_space"): {
         "world": "0",
         "object": "1",
         "pref": "2",
-        "uv": "3",
+    },
+    ("triplanar", "normal_type"): {
+        "shading": "0",
+        "smoothanddisplaced": "1",
+        "smooth_and_displaced": "1",
+        "smooth-and-displaced": "1",
+        "smoothbeforedisplacing": "2",
+        "smooth_before_displacing": "2",
+        "smooth-before-displacing": "2",
     },
     ("cell_noise", "coord_space"): {
         "world": "0",
@@ -51,19 +66,90 @@ KNOWN_ENUM_VALUE_MAP = {
         "uv": "3",
     },
     ("cell_noise", "pattern"): {
-        "cell1": "0",
-        "cell2": "1",
-        "noise1": "2",
-        "noise2": "3",
+        "noise1": "0",
+        "noise2": "1",
+        "cell1": "2",
+        "cell2": "3",
         "worley1": "4",
         "worley2": "5",
-        "random": "6",
+        "alligator": "6",
     },
     ("standard_surface", "subsurface_type"): {
         "diffusion": "0",
         "randomwalk": "1",
         "random_walk": "1",
         "random-walk": "1",
+        "randomwalkv2": "2",
+        "randomwalk_v2": "2",
+        "randomwalk-v2": "2",
+    },
+    ("ramp_float", "coord_space"): {
+        "world": "0",
+        "object": "1",
+    },
+    ("ramp_float", "type"): {
+        "custom": "0",
+        "u": "1",
+        "v": "2",
+        "diagonal": "3",
+        "radial": "4",
+        "circular": "5",
+        "box": "6",
+        "time": "7",
+        "3dlinear": "8",
+        "3d_linear": "8",
+        "3d-linear": "8",
+        "3dspherical": "9",
+        "3d_spherical": "9",
+        "3d-spherical": "9",
+        "3dcylindrical": "10",
+        "3d_cylindrical": "10",
+        "3d-cylindrical": "10",
+    },
+    ("ramp_float", "wrap"): {
+        "periodic": "0",
+        "clamp": "1",
+        "mirror": "2",
+    },
+    ("ramp_float", "use_implicit_uvs"): {
+        "off": "0",
+        "on": "1",
+        "curvesonly": "2",
+        "curves_only": "2",
+        "curves-only": "2",
+    },
+    ("mix_shader", "mode"): {
+        "blend": "0",
+        "add": "1",
+    },
+    ("image", "filter"): {
+        "closest": "0",
+        "bilinear": "1",
+        "bicubic": "2",
+        "smartbicubic": "3",
+        "smart_bicubic": "3",
+        "smart-bicubic": "3",
+    },
+    ("image", "swrap"): {
+        "periodic": "0",
+        "black": "1",
+        "clamp": "2",
+        "mirror": "3",
+        "file": "4",
+        "missing": "5",
+    },
+    ("image", "twrap"): {
+        "periodic": "0",
+        "black": "1",
+        "clamp": "2",
+        "mirror": "3",
+        "file": "4",
+        "missing": "5",
+    },
+    ("curvature", "output"): {
+        "convex": "0",
+        "concave": "1",
+        "both": "2",
     },
 }
 
@@ -126,6 +212,17 @@ def normalize_port_name(port_name):
 
 def infer_index_encoded_enum_from_hints(param, string_value):
     try:
+        raw_text = safe_text_value(string_value).strip()
+        normalized_text = normalize_enum_key(raw_text)
+
+        # Arnold/KtoA enum parameters are commonly stored as StringAttr whose
+        # payload is the numeric enum index encoded as text, e.g. "0".
+        # If we already have an index-like value, preserve it instead of
+        # reverse-mapping back to the display label ("world"), which makes the
+        # popup show a warning exclamation mark.
+        if raw_text.isdigit():
+            return raw_text
+
         params_to_check = [param]
         get_parent = getattr(param, "getParent", None)
         if callable(get_parent):
@@ -145,35 +242,118 @@ def infer_index_encoded_enum_from_hints(param, string_value):
             options = hints.get("options")
             if isinstance(options, dict):
                 for k, v in options.items():
-                    if normalize_enum_key(k) == normalize_enum_key(string_value):
+                    key_text = safe_text_value(k).strip()
+                    value_text = safe_text_value(v).strip()
+                    if key_text == raw_text or value_text == raw_text:
+                        return raw_text
+                    if normalize_enum_key(key_text) == normalized_text:
                         return str(v)
-                    if normalize_enum_key(v) == normalize_enum_key(string_value):
+                    if normalize_enum_key(value_text) == normalized_text:
                         return str(k)
             elif isinstance(options, list):
                 for i, opt in enumerate(options):
-                    if normalize_enum_key(opt) == normalize_enum_key(string_value):
+                    option_text = safe_text_value(opt).strip()
+                    if option_text == raw_text or str(i) == raw_text:
+                        return raw_text
+                    if normalize_enum_key(option_text) == normalized_text:
                         return str(i)
     except Exception:
         pass
     return string_value
 
-def prepare_input_value_for_write(shader_type, input_name, raw_value):
-    value = raw_value
+
+def normalize_serialized_input_value(input_type, raw_value):
+    if raw_value is None:
+        return None
+
+    if isinstance(raw_value, tuple):
+        return list(raw_value)
+
+    if not isinstance(raw_value, str):
+        return raw_value
+
+    text = raw_value.strip()
+    parsed_value = None
+    if text and text[0] in "([{" and text[-1] in ")]}":
+        try:
+            parsed_value = ast.literal_eval(text)
+        except Exception:
+            parsed_value = None
+
+    if parsed_value is None:
+        return raw_value
+
+    if isinstance(parsed_value, tuple):
+        parsed_value = list(parsed_value)
+
+    if input_type in ("color3f", "vector3f", "normal3f", "point3f"):
+        if isinstance(parsed_value, (list, tuple)):
+            return [float(v) for v in parsed_value]
+
+    if input_type == "float[]":
+        if isinstance(parsed_value, (list, tuple)):
+            return [float(v) for v in parsed_value]
+
+    if input_type == "int[]":
+        if isinstance(parsed_value, (list, tuple)):
+            return [int(v) for v in parsed_value]
+
+    return parsed_value
+
+
+def map_known_enum_value(shader_type, input_name, raw_value):
+    enum_map = KNOWN_ENUM_VALUE_MAP.get((shader_type, input_name))
+    if not enum_map:
+        return raw_value
+
+    normalized_value = normalize_enum_key(raw_value)
+    for enum_name, encoded_value in enum_map.items():
+        if normalize_enum_key(enum_name) == normalized_value:
+            return encoded_value
+    return raw_value
+
+
+def collapse_ramp_interpolation_value(raw_value):
+    if isinstance(raw_value, str):
+        return RAMP_INTERPOLATION_VALUE_MAP.get(
+            RAMP_INTERPOLATION_NAME_MAP.get(raw_value.lower(), 1),
+            "linear"
+        )
+
+    if not isinstance(raw_value, (list, tuple)) or not raw_value:
+        return "linear"
+
+    counts = {}
+    for item in raw_value:
+        key = None
+        if isinstance(item, str):
+            key = RAMP_INTERPOLATION_NAME_MAP.get(item.lower())
+        else:
+            try:
+                key = int(item)
+            except Exception:
+                key = None
+        if key is None:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+
+    if not counts:
+        return "linear"
+
+    most_common_key = max(sorted(counts.keys()), key=lambda entry: counts[entry])
+    if len(counts) > 1:
+        print("[提示] ramp_Interpolation 存在混合插值，当前按出现次数最多的模式写入: {}".format(
+            RAMP_INTERPOLATION_VALUE_MAP.get(most_common_key, "linear")
+        ))
+    return RAMP_INTERPOLATION_VALUE_MAP.get(most_common_key, "linear")
+
+def prepare_input_value_for_write(shader_type, input_name, input_type, raw_value):
+    value = normalize_serialized_input_value(input_type, raw_value)
     if shader_type == "ramp_float":
-        if input_name == "ramp_Interpolation" and isinstance(value, list):
-            new_list = []
-            for v in value:
-                if isinstance(v, str):
-                    new_list.append(RAMP_INTERPOLATION_NAME_MAP.get(v.lower(), 1))
-                else:
-                    new_list.append(v)
-            value = new_list
-    elif isinstance(value, str):
-        enum_map = KNOWN_ENUM_VALUE_MAP.get((shader_type, input_name))
-        if enum_map:
-            mapped_value = enum_map.get(normalize_enum_key(value))
-            if mapped_value is not None:
-                value = mapped_value
+        if input_name == "ramp_Interpolation":
+            value = collapse_ramp_interpolation_value(value)
+    if isinstance(value, str):
+        value = map_known_enum_value(shader_type, input_name, value)
     return value
 
 
@@ -239,6 +419,10 @@ def set_parameter_value_group(node, base_path, value):
     enable_param = node.getParameter(base_path + ".enable")
     if enable_param is not None:
         enable_param.setValue(1, 0)
+
+    dynamic_array_param = node.getParameter(base_path + ".isDynamicArray")
+    if dynamic_array_param is not None and isinstance(value, (list, tuple)):
+        dynamic_array_param.setValue(1, 0)
         
     value_param = node.getParameter(base_path + ".value")
     if value_param is None:
@@ -316,8 +500,9 @@ def configure_arnold_shading_node(shader_node, shader_data):
         value = input_info.get("value")
         if value is None:
             continue
-            
-        value = prepare_input_value_for_write(shader_type, input_name, value)
+
+        input_type = input_info.get("type")
+        value = prepare_input_value_for_write(shader_type, input_name, input_type, value)
         param_base_path = "parameters." + input_name
         
         if shader_type == "ramp_float" and input_name in ("ramp_Knots", "ramp_Floats", "ramp_Interpolation"):

@@ -125,6 +125,16 @@ def to_python_type(value):
             result[safe_text_value(key)] = to_python_type(item)
         return result
 
+    # Many USD/Gf vector/color values are indexable but not reliably iterable in
+    # older Houdini/USD Python bindings. Prefer indexed access so color3f,
+    # vector3f and similar compound values serialize as JSON arrays instead of
+    # fallback strings like "(1, 1, 1)".
+    if hasattr(value, "__len__") and hasattr(value, "__getitem__") and not isinstance(value, (str, bytes)):
+        try:
+            return [to_python_type(value[index]) for index in range(len(value))]
+        except Exception:
+            pass
+
     if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
         try:
             return [to_python_type(item) for item in value]
